@@ -1,0 +1,158 @@
+import os
+import time
+import joblib
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.neural_network import MLPRegressor
+
+def read_csv_file(file):
+    """Read a CSV file and handle errors."""
+    try:
+        return pd.read_csv(file, header=0)
+    except pd.errors.EmptyDataError:
+        print(f"Warning: File {file} is empty and will be skipped.")
+        return None
+    except Exception as e:
+        print(f"Error reading file {file}: {e}")
+        return None
+
+# Load and merge data
+folder_path = 'flight data/new-data-NASA-FUEL'
+all_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith('.csv')]
+data_frames = []
+file_names = []
+
+for file in all_files:
+    df = read_csv_file(file)
+    if df is not None:
+        data_frames.append(df)
+        file_names.append([file] * len(df))
+
+merged_data = pd.concat(data_frames, ignore_index=True)
+merged_files = np.concatenate(file_names)
+
+# Define input and output columns
+input_columns = [
+    'n11_rpm', 'n12_rpm', 'n13_rpm', 'n14_rpm',
+    'tas_mps', 'press_static_npm2', 'hdot_2_mps',
+    'aoac_rad', 'hbaro_m', 'temp_static_deg',
+    'flap_te_pos'
+]
+output_columns = ['ff_1_kgps', 'ff_2_kgps', 'ff_3_kgps', 'ff_4_kgps']
+
+# Select relevant data and drop missing values
+df_selected = merged_data[input_columns + output_columns].copy()
+selected_files = merged_files[df_selected.index]
+df_selected.dropna(inplace=True)
+selected_files = selected_files[df_selected.index]
+
+# Prepare data for training and testing
+X = df_selected[input_columns]
+y = df_selected[output_columns].sum(axis=1)
+
+X_train, X_test, y_train, y_test, train_files, test_files = train_test_split(
+    X, y, selected_files, test_size=0.2, random_state=42
+)
+
+# Scale the features
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# Save the scaler
+scaler_path = 'scaler_total.joblib'
+joblib.dump(scaler, scaler_path)
+print(f"Scaler saved to {scaler_path}")
+
+# Model training
+model = MLPRegressor(
+    hidden_layer_sizes=(10, 5),
+    activation='relu',
+    solver='adam',
+    max_iter=1000,
+    alpha=0.0001,  # L2 regularization parameter
+    random_state=42
+)
+model.fit(X_train_scaled, y_train)
+
+# Save the model
+model_path = 'mlp_model_total.joblib'
+joblib.dump(model, model_path)
+
+# Evaluate on training set
+y_train_pred = model.predict(X_train_scaled)
+mse_train = mean_squared_error(y_train, y_train_pred)
+rmse_train = np.sqrt(mse_train)
+mae_train = mean_absolute_error(y_train, y_train_pred)
+r2_train = r2_score(y_train, y_train_pred)
+
+# Calculate mean relative error for training set
+non_zero_train = y_train != 0
+mre_train = np.mean(np.abs((y_train[non_zero_train] - y_train_pred[non_zero_train]) / y_train[non_zero_train])) * 100
+
+# Convert units for training errors
+rmse_train_kgh = rmse_train * 3600
+mae_train_kgh = mae_train * 3600
+
+# Print training results
+print("Training Root Mean Squared Error (RMSE):", rmse_train, "kgps (", rmse_train_kgh, "kg/h)")
+print("Training Mean Absolute Error (MAE):", mae_train, "kgps (", mae_train_kgh, "kg/h)")
+print("Training Mean Relative Error (MRE):", mre_train, "%")
+print("Training R²:", r2_train)
+
+# Evaluate on test set
+y_pred = model.predict(X_test_scaled)
+mse = mean_squared_error(y_test, y_pred)
+rmse = np.sqrt(mse)
+mae = mean_absolute_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+
+# Calculate mean relative error for test set
+non_zero_test = y_test != 0
+mre = np.mean(np.abs((y_test[non_zero_test] - y_pred[non_zero_test]) / y_test[non_zero_test])) * 100
+
+# Convert units for test errors
+rmse_kgh = rmse * 3600
+mae_kgh = mae * 3600
+
+# Print test results
+print("Root Mean Squared Error (RMSE):", rmse, "kgps (", rmse_kgh, "kg/h)")
+print("Mean Absolute Error (MAE):", mae, "kgps (", mae_kgh, "kg/h)")
+print("Mean Relative Error (MRE):", mre, "%")
+print("R²:", r2)
+
+# Save predictions and metrics to Excel files
+df_result = pd.DataFrame({
+    'Actual_Total_Fuel_Flow': y_test.values,
+    'Predicted_Total_Fuel_Flow': y_pred
+})
+df_result.to_excel("prediction_model_mlp_totalfuelflow_testset.xlsx", index=False)
+
+metrics_df = pd.DataFrame({
+    'Metric': ['RMSE (kgps)', 'MAE (kgps)', 'MRE (%)', 'R²'],
+    'Training Value': [rmse_train, mae_train, mre_train, r2_train],
+    'Testing Value': [rmse, mae, mre, r2]
+})
+metrics_df.to_excel("prediction_evaluation_metrics_totalfuelflow.xlsx", index=False)
+
+# Visualize training results
+train_actual_vs_predicted_df = pd.DataFrame({
+    'Actual_Total_Fuel_Flow': y_train,
+    'Predicted_Total_Fuel_Flow': y_train_pred
+})
+
+plt.figure(figsize=(10, 6))
+plt.scatter(train_actual_vs_predicted_df['Actual_Total_Fuel_Flow'], 
+            train_actual_vs_predicted_df['Predicted_Total_Fuel_Flow'], color='blue')
+plt.plot(train_actual_vs_predicted_df['Actual_Total_Fuel_Flow'], 
+         train_actual_vs_predicted_df['Actual_Total_Fuel_Flow'], color='red', linestyle='--')
+plt.title('Training Actual vs Predicted Total Fuel Flow')
+plt.xlabel('Actual Total Fuel Flow (kgps)')
+plt.ylabel('Predicted Total Fuel Flow (kgps)')
+plt.grid(True)
+plt.savefig('training_actual_vs_predicted_totalfuelflow.png')
+plt.show()
